@@ -1,10 +1,11 @@
 from fastapi import FastAPI
 from app.routers import health
+from app.config import APP_NAME
 
-app = FastAPI(title="UrbanEats Backend")
+app = FastAPI(title=APP_NAME)
 
 app.include_router(health.router)
 
 @app.get("/")
 def root():
-    return {"message": "UrbanEats backend is running"}
+    return {"message": f"{APP_NAME} is running"}
