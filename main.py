@@ -1,17 +1,12 @@
 from fastapi import FastAPI
-from app.routers import health
-from app.config import APP_NAME
+from app.db import init_db
 
-app = FastAPI(title=APP_NAME)
+app = FastAPI()
 
-app.include_router(health.router)
+@app.on_event("startup")
+def startup_event():
+    init_db()
 
 @app.get("/")
 def root():
-    return {"message": f"{APP_NAME} is running"}
-from app.db import engine
-
-@app.get("/db-check")
-def db_check():
-    with engine.connect() as conn:
-        return {"db": "connected"}
+    return {"message": "UrbanEats Backend is running"}
