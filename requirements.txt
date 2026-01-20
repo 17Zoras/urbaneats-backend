@@ -2,3 +2,5 @@ fastapi
 uvicorn
 psycopg[binary]
 requests
+sentence-transformers
+torch

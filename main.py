@@ -3,60 +3,21 @@ import os
 import requests
 from io import StringIO
 
-from fastapi import FastAPI, Query, Header, HTTPException
+from fastapi import FastAPI, Query, HTTPException
 import psycopg
 
-from openai import OpenAI
-
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
-
-
+from sentence_transformers import SentenceTransformer
 
 print("🚀 UrbanEats starting up...")
 
 app = FastAPI()
 
-
-
-def generate_embedding(text: str):
-    response = client.embeddings.create(
-        model="text-embedding-3-small",
-        input=text
-    )
-    return response.data[0].embedding
-
-def embed_all_products():
-    print("🧠 Generating embeddings for products...")
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            # fetch products that don't have embeddings yet
-            cur.execute("""
-                SELECT id, name, description
-                FROM products
-                WHERE embedding IS NULL
-            """)
-            rows = cur.fetchall()
-
-            for product_id, name, description in rows:
-                text = f"{name} {description}"
-
-                embedding = generate_embedding(text)
-
-                cur.execute(
-                    """
-                    UPDATE products
-                    SET embedding = %s
-                    WHERE id = %s
-                    """,
-                    (embedding, product_id)
-                )
-
-        conn.commit()
-
-    print("✅ Embeddings stored successfully")
-
-
+# =====================================================
+# Load local embedding model (ONCE at startup)
+# =====================================================
+print("🧠 Loading local embedding model...")
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+print("✅ Embedding model loaded")
 
 # =====================================================
 # Database connection
@@ -69,14 +30,6 @@ def get_db_connection():
         dbname=os.getenv("DB_NAME"),
         port=5432
     )
-
-# =====================================================
-# Admin security (Chapter 9)
-# =====================================================
-def verify_admin_key(x_admin_key: str | None):
-    expected = os.getenv("ADMIN_KEY")
-    if not expected or x_admin_key != expected:
-        raise HTTPException(status_code=401, detail="Unauthorized")
 
 # =====================================================
 # Health check
@@ -147,7 +100,7 @@ def get_products(
         return {"error": "db error", "detail": str(e)}
 
 # =====================================================
-# Search API (Postgres Full-Text Search – Chapter 6)
+# Full-Text Search (Chapter 6)
 # =====================================================
 @app.get("/search")
 def search_products(q: str = Query(..., min_length=1)):
@@ -182,7 +135,7 @@ def search_products(q: str = Query(..., min_length=1)):
         return {"error": "search failed", "detail": str(e)}
 
 # =====================================================
-# Google Sheet Import (ADMIN ONLY)
+# Google Sheet Import
 # =====================================================
 SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -191,8 +144,6 @@ SHEET_CSV_URL = (
 )
 
 def import_products_from_sheet():
-    print("📥 Importing products from Google Sheet...")
-
     response = requests.get(SHEET_CSV_URL, timeout=30)
     response.raise_for_status()
 
@@ -207,40 +158,50 @@ def import_products_from_sheet():
                     VALUES (%s, %s, %s)
                     ON CONFLICT DO NOTHING
                     """,
-                    (
-                        row["name"],
-                        row["description"],
-                        row["price"],
-                    )
+                    (row["name"], row["description"], row["price"])
                 )
         conn.commit()
 
-    print("✅ Product import completed")
+# =====================================================
+# Embedding helper
+# =====================================================
+def generate_embedding(text: str):
+    vector = embedding_model.encode(text)
+    return vector.tolist()
 
 # =====================================================
-# Admin endpoint (SECURED)
+# ADMIN: Embed all products (Chapter 7)
 # =====================================================
-@app.post("/admin/import-sheet")
-def import_sheet(x_admin_key: str | None = Header(default=None)):
-    verify_admin_key(x_admin_key)
-    import_products_from_sheet()
-    return {"status": "imported"}
-
-
-
 @app.post("/admin/embed-products")
 def embed_products():
     try:
-        embed_all_products()
-        return {"status": "embeddings generated"}
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, name, description FROM products;")
+                rows = cur.fetchall()
+
+                for product_id, name, description in rows:
+                    text = f"{name}. {description}"
+                    embedding = generate_embedding(text)
+
+                    cur.execute(
+                        """
+                        UPDATE products
+                        SET embedding = %s
+                        WHERE id = %s
+                        """,
+                        (embedding, product_id)
+                    )
+
+            conn.commit()
+
+        return {"status": "embeddings generated", "count": len(rows)}
+
     except Exception as e:
-        return {"status": "failed", "detail": str(e)}
-
-
-
+        raise HTTPException(status_code=500, detail=str(e))
 
 # =====================================================
-# Local run (ignored by Cloud Run)
+# Local run
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
