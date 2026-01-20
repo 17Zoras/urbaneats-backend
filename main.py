@@ -6,9 +6,57 @@ from io import StringIO
 from fastapi import FastAPI, Query, Header, HTTPException
 import psycopg
 
+from openai import OpenAI
+
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+
 print("🚀 UrbanEats starting up...")
 
 app = FastAPI()
+
+
+
+def generate_embedding(text: str):
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=text
+    )
+    return response.data[0].embedding
+
+def embed_all_products():
+    print("🧠 Generating embeddings for products...")
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            # fetch products that don't have embeddings yet
+            cur.execute("""
+                SELECT id, name, description
+                FROM products
+                WHERE embedding IS NULL
+            """)
+            rows = cur.fetchall()
+
+            for product_id, name, description in rows:
+                text = f"{name} {description}"
+
+                embedding = generate_embedding(text)
+
+                cur.execute(
+                    """
+                    UPDATE products
+                    SET embedding = %s
+                    WHERE id = %s
+                    """,
+                    (embedding, product_id)
+                )
+
+        conn.commit()
+
+    print("✅ Embeddings stored successfully")
+
+
 
 # =====================================================
 # Database connection
@@ -177,6 +225,19 @@ def import_sheet(x_admin_key: str | None = Header(default=None)):
     verify_admin_key(x_admin_key)
     import_products_from_sheet()
     return {"status": "imported"}
+
+
+
+@app.post("/admin/embed-products")
+def embed_products():
+    try:
+        embed_all_products()
+        return {"status": "embeddings generated"}
+    except Exception as e:
+        return {"status": "failed", "detail": str(e)}
+
+
+
 
 # =====================================================
 # Local run (ignored by Cloud Run)
