@@ -242,13 +242,13 @@ LIMIT %s;
 # =====================================================
 # 🔀 Hybrid Search (Text + Semantic) — Chapter 8
 # =====================================================
+
 @app.get("/hybrid-search")
 def hybrid_search(
     q: str = Query(..., min_length=1),
     limit: int = Query(5, ge=1, le=20)
 ):
     try:
-        q_lower = q.lower()
         query_embedding = generate_embedding(q)
 
         with get_db_connection() as conn:
@@ -260,66 +260,68 @@ def hybrid_search(
                         name,
                         description,
                         price,
-                        category,
+
                         ts_rank(search_vector, plainto_tsquery('english', %s)) AS text_rank,
-                        1 - (embedding <=> %s::vector) AS semantic_score
+
+                        1 - (embedding <=> %s::vector) AS semantic_score,
+
+                        CASE
+                            WHEN category = 'veg' THEN 1.0
+                            WHEN category = 'non-veg' THEN 0.5
+                            WHEN category = 'dessert' THEN 0.2
+                            ELSE 0.0
+                        END AS category_boost
+
                     FROM products
                     WHERE
                         search_vector @@ plainto_tsquery('english', %s)
-                        OR (1 - (embedding <=> %s::vector)) > 0.30
+                        OR (1 - (embedding <=> %s::vector)) > 0.35
+
+                    ORDER BY
+                        (
+                          ts_rank(search_vector, plainto_tsquery('english', %s)) * 0.5
+                        + (1 - (embedding <=> %s::vector)) * 0.4
+                        + CASE
+                            WHEN category = 'veg' THEN 1.0
+                            WHEN category = 'non-veg' THEN 0.5
+                            WHEN category = 'dessert' THEN 0.2
+                            ELSE 0.0
+                          END * 0.1
+                        ) DESC
+
+                    LIMIT %s
                     """,
-                    (q, query_embedding, q, query_embedding)
+                    (
+                        q,
+                        query_embedding,
+                        q,
+                        query_embedding,
+                        q,
+                        query_embedding,
+                        limit
+                    )
                 )
                 rows = cur.fetchall()
 
-        results = []
-
-        for r in rows:
-            category = (r[4] or "").lower()
-            text_rank = r[5] or 0.0
-            semantic_score = r[6] or 0.0
-
-            # -----------------------------
-            # Business category boost
-            # -----------------------------
-            business_boost = 0.0
-
-            if "veg" in q_lower and category == "veg":
-                business_boost += 0.25
-
-            if "chicken" in q_lower and category == "non-veg":
-                business_boost += 0.25
-
-            if category == "dessert" and not any(k in q_lower for k in ["dessert", "choco", "sweet"]):
-                business_boost -= 0.20
-
-            final_score = (
-                semantic_score * 0.5
-                + text_rank * 0.3
-                + business_boost * 0.2
-            )
-
-            results.append({
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "price": float(r[3]),
-                "category": category,
-                "semantic_score": semantic_score,
-                "text_rank": text_rank,
-                "final_score": final_score
-            })
-
-        # Sort by final score
-        results.sort(key=lambda x: x["final_score"], reverse=True)
-
         return {
             "query": q,
-            "results": results[:limit]
+            "results": [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "description": r[2],
+                    "price": float(r[3]),
+                    "text_rank": float(r[4]) if r[4] else 0.0,
+                    "semantic_score": float(r[5]),
+                    "category_boost": float(r[6]),
+                }
+                for r in rows
+            ]
         }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
 
 
 
