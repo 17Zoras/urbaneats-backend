@@ -202,17 +202,14 @@ def semantic_search(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT
-                        id,
-                        name,
-                        description,
-                        price,
-                        1 - (embedding <=> %s::vector) AS similarity
-                    FROM products
-                    WHERE embedding IS NOT NULL
-                      AND 1 - (embedding <=> %s::vector) >= 0.40
-                    ORDER BY embedding <=> %s::vector
-                    LIMIT %s
+SELECT id, name, description, price,
+       1 - (embedding <=> %s::vector) AS similarity
+FROM products
+WHERE embedding IS NOT NULL
+  AND 1 - (embedding <=> %s::vector) >= 0.45
+ORDER BY embedding <=> %s::vector
+LIMIT %s;
+
                     """,
                     (
                         query_embedding,  # similarity SELECT
