@@ -237,6 +237,63 @@ LIMIT %s;
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+
+# =====================================================
+# 🔀 Hybrid Search (Text + Semantic) — Chapter 8
+# =====================================================
+@app.get("/hybrid-search")
+def hybrid_search(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(5, ge=1, le=20)
+):
+    try:
+        query_embedding = generate_embedding(q)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        id,
+                        name,
+                        description,
+                        price,
+                        ts_rank(search_vector, plainto_tsquery('english', %s)) AS text_rank,
+                        1 - (embedding <=> %s::vector) AS semantic_score
+                    FROM products
+                    WHERE
+                        search_vector @@ plainto_tsquery('english', %s)
+                        OR embedding IS NOT NULL
+                    ORDER BY
+                        (ts_rank(search_vector, plainto_tsquery('english', %s)) * 0.6
+                        + (1 - (embedding <=> %s::vector)) * 0.4) DESC
+                    LIMIT %s
+                    """,
+                    (q, query_embedding, q, q, query_embedding, limit)
+                )
+                rows = cur.fetchall()
+
+        return {
+            "query": q,
+            "results": [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "description": r[2],
+                    "price": float(r[3]),
+                    "text_rank": float(r[4]) if r[4] is not None else 0.0,
+                    "semantic_score": float(r[5])
+                }
+                for r in rows
+            ]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 # =====================================================
 # Local run (Cloud Run ignores this)
 # =====================================================
