@@ -19,7 +19,7 @@ _embedding_model = None
 def get_embedding_model():
     global _embedding_model
     if _embedding_model is None:
-        print("🧠 Loading embedding model (lazy)...")
+        print("🧠 Loading embedding model...")
         _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
         print("✅ Embedding model loaded")
     return _embedding_model
@@ -37,7 +37,7 @@ def get_db_connection():
     )
 
 # =====================================================
-# Health check
+# Health
 # =====================================================
 @app.get("/health")
 def health():
@@ -57,87 +57,79 @@ def db_test():
         return {"db": "error", "detail": str(e)}
 
 # =====================================================
-# Products API (pagination)
+# Products (pagination)
 # =====================================================
 @app.get("/products")
 def get_products(
     page: int = Query(1, ge=1),
     limit: int = Query(10, ge=1, le=50)
 ):
-    try:
-        offset = (page - 1) * limit
+    offset = (page - 1) * limit
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, name, description, price
-                    FROM products
-                    ORDER BY id
-                    LIMIT %s OFFSET %s
-                    """,
-                    (limit, offset)
-                )
-                rows = cur.fetchall()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, description, price
+                FROM products
+                ORDER BY id
+                LIMIT %s OFFSET %s
+                """,
+                (limit, offset)
+            )
+            rows = cur.fetchall()
 
-                cur.execute("SELECT COUNT(*) FROM products;")
-                total = cur.fetchone()[0]
+            cur.execute("SELECT COUNT(*) FROM products;")
+            total = cur.fetchone()[0]
 
-        return {
-            "page": page,
-            "limit": limit,
-            "total": total,
-            "products": [
-                {
-                    "id": r[0],
-                    "name": r[1],
-                    "description": r[2],
-                    "price": float(r[3])
-                }
-                for r in rows
-            ]
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "page": page,
+        "limit": limit,
+        "total": total,
+        "products": [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "price": float(r[3])
+            }
+            for r in rows
+        ]
+    }
 
 # =====================================================
-# Full-Text Search (Postgres FTS)
+# Full-text search (Chapter 6)
 # =====================================================
 @app.get("/search")
 def search_products(q: str = Query(..., min_length=1)):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, name, description, price
-                    FROM products
-                    WHERE search_vector @@ plainto_tsquery('english', %s)
-                    ORDER BY ts_rank(search_vector, plainto_tsquery('english', %s)) DESC
-                    """,
-                    (q, q)
-                )
-                rows = cur.fetchall()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, description, price
+                FROM products
+                WHERE search_vector @@ plainto_tsquery('english', %s)
+                ORDER BY ts_rank(search_vector, plainto_tsquery('english', %s)) DESC
+                """,
+                (q, q)
+            )
+            rows = cur.fetchall()
 
-        return {
-            "query": q,
-            "results": [
-                {
-                    "id": r[0],
-                    "name": r[1],
-                    "description": r[2],
-                    "price": float(r[3])
-                }
-                for r in rows
-            ]
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "query": q,
+        "results": [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "price": float(r[3])
+            }
+            for r in rows
+        ]
+    }
 
 # =====================================================
-# Google Sheet Import (Admin)
+# Google Sheet import (admin)
 # =====================================================
 SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -145,7 +137,8 @@ SHEET_CSV_URL = (
     "/export?format=csv"
 )
 
-def import_products_from_sheet():
+@app.post("/admin/import-sheet")
+def import_sheet():
     response = requests.get(SHEET_CSV_URL, timeout=30)
     response.raise_for_status()
 
@@ -164,51 +157,40 @@ def import_products_from_sheet():
                 )
         conn.commit()
 
-@app.post("/admin/import-sheet")
-def import_sheet():
-    try:
-        import_products_from_sheet()
-        return {"status": "imported"}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "imported"}
 
 # =====================================================
-# Embedding helpers (Chapter 7)
+# Generate embedding
 # =====================================================
 def generate_embedding(text: str):
     model = get_embedding_model()
     return model.encode(text).tolist()
 
+# =====================================================
+# Admin: generate embeddings
+# =====================================================
 @app.post("/admin/embed-products")
 def embed_products():
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute("SELECT id, name, description FROM products;")
-                rows = cur.fetchall()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT id, name, description FROM products;")
+            rows = cur.fetchall()
 
-                for product_id, name, description in rows:
-                    text = f"{name}. {description}"
-                    embedding = generate_embedding(text)
-
-                    cur.execute(
-                        """
-                        UPDATE products
-                        SET embedding = %s
-                        WHERE id = %s
-                        """,
-                        (embedding, product_id)
-                    )
+            for pid, name, desc in rows:
+                emb = generate_embedding(f"{name}. {desc}")
+                cur.execute(
+                    "UPDATE products SET embedding = %s WHERE id = %s",
+                    (emb, pid)
+                )
 
         conn.commit()
-        return {"status": "embeddings generated", "count": len(rows)}
 
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {"status": "embeddings generated", "count": len(rows)}
 
 # =====================================================
-# Semantic Search (pgvector cosine similarity)
+# ✅ SEMANTIC SEARCH (Chapter 7)
 # =====================================================
+
 @app.get("/semantic-search")
 def semantic_search(
     q: str = Query(..., min_length=1),
@@ -222,10 +204,12 @@ def semantic_search(
                 cur.execute(
                     """
                     SELECT id, name, description, price,
-                           1 - (embedding <=> %s) AS similarity
+                           1 - (embedding <=> %s::vector) AS similarity
                     FROM products
-                    WHERE embedding IS NOT NULL
-                    ORDER BY embedding <=> %s
+WHERE embedding IS NOT NULL
+  AND 1 - (embedding <=> %s::vector) > 0.35
+ORDER BY embedding <=> %s::vector
+
                     LIMIT %s
                     """,
                     (query_embedding, query_embedding, limit)
@@ -249,8 +233,10 @@ def semantic_search(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-# =====================================================
-# Local run (ignored by Cloud Run)
+
+
+
+# Local run (Cloud Run ignores this)
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
