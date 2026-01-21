@@ -214,6 +214,49 @@ def embed_products():
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# =====================================================
+# Semantic Search (pgvector cosine similarity)
+# =====================================================
+@app.get("/semantic-search")
+def semantic_search(q: str = Query(..., min_length=1), limit: int = 5):
+    try:
+        query_embedding = generate_embedding(q)
+
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, name, description, price,
+                           1 - (embedding <=> %s) AS similarity
+                    FROM products
+                    WHERE embedding IS NOT NULL
+                    ORDER BY embedding <=> %s
+                    LIMIT %s
+                    """,
+                    (query_embedding, query_embedding, limit)
+                )
+                rows = cur.fetchall()
+
+        return {
+            "query": q,
+            "results": [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "description": r[2],
+                    "price": float(r[3]),
+                    "similarity": float(r[4])
+                }
+                for r in rows
+            ]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+
 # =====================================================
 # Local run (ignored by Cloud Run)
 # =====================================================
