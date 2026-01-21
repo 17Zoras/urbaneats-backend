@@ -263,9 +263,8 @@ def hybrid_search(
                         1 - (embedding <=> %s::vector) AS semantic_score
                     FROM products
                     WHERE
-                        search_vector @@ plainto_tsquery('english', %s)
-                        OR embedding IS NOT NULL
-                    ORDER BY
+search_vector @@ plainto_tsquery('english', %s)
+    OR (1 - (embedding <=> %s::vector)) > 0.35                    ORDER BY
                         (ts_rank(search_vector, plainto_tsquery('english', %s)) * 0.6
                         + (1 - (embedding <=> %s::vector)) * 0.4) DESC
                     LIMIT %s
