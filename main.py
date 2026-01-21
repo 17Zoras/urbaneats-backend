@@ -324,6 +324,42 @@ def hybrid_search(
 
 
 
+# =====================================================
+# 🏷️ Tag-based filter — Chapter 9
+# =====================================================
+@app.get("/filter-by-tag")
+def filter_by_tag(tag: str = Query(..., min_length=1)):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, name, description, price, tags
+                    FROM products
+                    WHERE tags @> ARRAY[%s]
+                    """,
+                    (tag,)
+                )
+                rows = cur.fetchall()
+
+        return {
+            "tag": tag,
+            "results": [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "description": r[2],
+                    "price": float(r[3]),
+                    "tags": r[4]
+                }
+                for r in rows
+            ]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 
 # =====================================================
 # Local run (Cloud Run ignores this)
