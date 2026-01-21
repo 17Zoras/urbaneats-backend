@@ -12,11 +12,17 @@ print("🚀 UrbanEats starting up...")
 app = FastAPI()
 
 # =====================================================
-# Load local embedding model (ONCE at startup)
+# Lazy-loaded embedding model (Cloud Run safe)
 # =====================================================
-print("🧠 Loading local embedding model...")
-embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-print("✅ Embedding model loaded")
+embedding_model = None
+
+def get_embedding_model():
+    global embedding_model
+    if embedding_model is None:
+        print("🧠 Loading embedding model (lazy)...")
+        embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+        print("✅ Embedding model loaded")
+    return embedding_model
 
 # =====================================================
 # Database connection
@@ -157,12 +163,16 @@ def import_products_from_sheet():
                     VALUES (%s, %s, %s)
                     ON CONFLICT DO NOTHING
                     """,
-                    (row["name"], row["description"], row["price"])
+                    (
+                        row["name"],
+                        row["description"],
+                        row["price"]
+                    )
                 )
         conn.commit()
 
 @app.post("/admin/import-sheet")
-def admin_import_sheet():
+def import_sheet():
     try:
         import_products_from_sheet()
         return {"status": "imported"}
@@ -170,27 +180,19 @@ def admin_import_sheet():
         raise HTTPException(status_code=500, detail=str(e))
 
 # =====================================================
-# Embedding helper
+# Embedding helpers (Chapter 7)
 # =====================================================
 def generate_embedding(text: str):
-    vector = embedding_model.encode(text)
+    model = get_embedding_model()
+    vector = model.encode(text)
     return vector.tolist()
 
-# =====================================================
-# ADMIN: Embed all products (Chapter 7)
-# =====================================================
 @app.post("/admin/embed-products")
 def embed_products():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, name, description
-                    FROM products
-                    WHERE embedding IS NULL
-                    """
-                )
+                cur.execute("SELECT id, name, description FROM products;")
                 rows = cur.fetchall()
 
                 for product_id, name, description in rows:
@@ -206,12 +208,8 @@ def embed_products():
                         (embedding, product_id)
                     )
 
-            conn.commit()
-
-        return {
-            "status": "embeddings generated",
-            "count": len(rows)
-        }
+        conn.commit()
+        return {"status": "embeddings generated", "count": len(rows)}
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -221,7 +219,6 @@ def embed_products():
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
-
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
