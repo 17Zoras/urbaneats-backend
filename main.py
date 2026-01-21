@@ -5,7 +5,6 @@ from io import StringIO
 
 from fastapi import FastAPI, Query, HTTPException
 import psycopg
-
 from sentence_transformers import SentenceTransformer
 
 print("🚀 UrbanEats starting up...")
@@ -135,7 +134,7 @@ def search_products(q: str = Query(..., min_length=1)):
         return {"error": "search failed", "detail": str(e)}
 
 # =====================================================
-# Google Sheet Import
+# Google Sheet Import (Admin)
 # =====================================================
 SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -162,6 +161,14 @@ def import_products_from_sheet():
                 )
         conn.commit()
 
+@app.post("/admin/import-sheet")
+def admin_import_sheet():
+    try:
+        import_products_from_sheet()
+        return {"status": "imported"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 # =====================================================
 # Embedding helper
 # =====================================================
@@ -177,7 +184,13 @@ def embed_products():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute("SELECT id, name, description FROM products;")
+                cur.execute(
+                    """
+                    SELECT id, name, description
+                    FROM products
+                    WHERE embedding IS NULL
+                    """
+                )
                 rows = cur.fetchall()
 
                 for product_id, name, description in rows:
@@ -195,13 +208,16 @@ def embed_products():
 
             conn.commit()
 
-        return {"status": "embeddings generated", "count": len(rows)}
+        return {
+            "status": "embeddings generated",
+            "count": len(rows)
+        }
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
 # =====================================================
-# Local run
+# Local run (ignored by Cloud Run)
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
