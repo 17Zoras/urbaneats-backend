@@ -207,7 +207,7 @@ def semantic_search(
                            1 - (embedding <=> %s::vector) AS similarity
                     FROM products
 WHERE embedding IS NOT NULL
-  AND 1 - (embedding <=> %s::vector) > 0.35
+  AND 1 - (embedding <=> %s::vector) > 0.40
 ORDER BY embedding <=> %s::vector
 
                     LIMIT %s
