@@ -98,7 +98,7 @@ def get_products(
     }
 
 # =====================================================
-# Full-text search (Chapter 6)
+# Full-text search
 # =====================================================
 @app.get("/search")
 def search_products(q: str = Query(..., min_length=1)):
@@ -160,7 +160,7 @@ def import_sheet():
     return {"status": "imported"}
 
 # =====================================================
-# Generate embedding
+# Embedding helpers
 # =====================================================
 def generate_embedding(text: str):
     model = get_embedding_model()
@@ -188,9 +188,8 @@ def embed_products():
     return {"status": "embeddings generated", "count": len(rows)}
 
 # =====================================================
-# ✅ SEMANTIC SEARCH (Chapter 7)
+# ✅ SEMANTIC SEARCH (FIXED + CLEAN)
 # =====================================================
-
 @app.get("/semantic-search")
 def semantic_search(
     q: str = Query(..., min_length=1),
@@ -203,16 +202,24 @@ def semantic_search(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, name, description, price,
-                           1 - (embedding <=> %s::vector) AS similarity
+                    SELECT
+                        id,
+                        name,
+                        description,
+                        price,
+                        1 - (embedding <=> %s::vector) AS similarity
                     FROM products
-WHERE embedding IS NOT NULL
-  AND 1 - (embedding <=> %s::vector) > 0.40
-ORDER BY embedding <=> %s::vector
-
+                    WHERE embedding IS NOT NULL
+                      AND 1 - (embedding <=> %s::vector) >= 0.40
+                    ORDER BY embedding <=> %s::vector
                     LIMIT %s
                     """,
-                    (query_embedding, query_embedding, limit)
+                    (
+                        query_embedding,  # similarity SELECT
+                        query_embedding,  # similarity WHERE
+                        query_embedding,  # ORDER BY
+                        limit
+                    )
                 )
                 rows = cur.fetchall()
 
@@ -233,9 +240,7 @@ ORDER BY embedding <=> %s::vector
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-
-
-
+# =====================================================
 # Local run (Cloud Run ignores this)
 # =====================================================
 if __name__ == "__main__":
