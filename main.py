@@ -358,6 +358,40 @@ def filter_by_tag(
             for r in rows
         ]
     }
+# =====================================================
+# Filter by category
+# =====================================================
+@app.get("/filter-by-category")
+def filter_by_category(category: str = Query(..., min_length=1)):
+    category = category.lower()
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, description, price, tags, category
+                FROM products
+                WHERE category = %s
+                ORDER BY id
+                """,
+                (category,)
+            )
+            rows = cur.fetchall()
+
+    return {
+        "category": category,
+        "results": [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "price": float(r[3]),
+                "tags": r[4],
+                "category": r[5]
+            }
+            for r in rows
+        ]
+    }
 
 
 # =====================================================
