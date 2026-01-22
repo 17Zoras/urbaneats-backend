@@ -325,10 +325,13 @@ def hybrid_search(
 
 
 # =====================================================
-# 🏷️ Tag-based filter — Chapter 9
+# 🏷️ Filter by Tag — Chapter 9
 # =====================================================
 @app.get("/filter-by-tag")
-def filter_by_tag(tag: str = Query(..., min_length=1)):
+def filter_by_tag(
+    tag: str = Query(..., min_length=1),
+    limit: int = Query(10, ge=1, le=50)
+):
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
@@ -336,9 +339,10 @@ def filter_by_tag(tag: str = Query(..., min_length=1)):
                     """
                     SELECT id, name, description, price, tags
                     FROM products
-                    WHERE tags @> ARRAY[%s]
+                    WHERE %s = ANY(tags)
+                    LIMIT %s
                     """,
-                    (tag,)
+                    (tag, limit)
                 )
                 rows = cur.fetchall()
 
