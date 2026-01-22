@@ -202,12 +202,14 @@ def semantic_search(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-SELECT id, name, description, price,
-       1 - (embedding <=> %s::vector) AS similarity
+SELECT DISTINCT ON (name)
+    id, name, description, price,
+    1 - (embedding <=> %s::vector) AS similarity
 FROM products
 WHERE embedding IS NOT NULL
-  AND 1 - (embedding <=> %s::vector) >= 0.45
-ORDER BY embedding <=> %s::vector
+ORDER BY
+    name,
+    similarity DESC
 LIMIT %s;
 
                     """,
@@ -255,41 +257,22 @@ def hybrid_search(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT
-                        id,
-                        name,
-                        description,
-                        price,
-
-                        ts_rank(search_vector, plainto_tsquery('english', %s)) AS text_rank,
-
-                        1 - (embedding <=> %s::vector) AS semantic_score,
-
-                        CASE
-                            WHEN category = 'veg' THEN 1.0
-                            WHEN category = 'non-veg' THEN 0.5
-                            WHEN category = 'dessert' THEN 0.2
-                            ELSE 0.0
-                        END AS category_boost
-
-                    FROM products
-                    WHERE
-                        search_vector @@ plainto_tsquery('english', %s)
-                        OR (1 - (embedding <=> %s::vector)) > 0.35
-
-                    ORDER BY
-                        (
-                          ts_rank(search_vector, plainto_tsquery('english', %s)) * 0.5
-                        + (1 - (embedding <=> %s::vector)) * 0.4
-                        + CASE
-                            WHEN category = 'veg' THEN 1.0
-                            WHEN category = 'non-veg' THEN 0.5
-                            WHEN category = 'dessert' THEN 0.2
-                            ELSE 0.0
-                          END * 0.1
-                        ) DESC
-
-                    LIMIT %s
+SELECT DISTINCT ON (name)
+    id,
+    name,
+    description,
+    price,
+    ts_rank(search_vector, plainto_tsquery('english', %s)) AS text_rank,
+    1 - (embedding <=> %s::vector) AS semantic_score
+FROM products
+WHERE
+    search_vector @@ plainto_tsquery('english', %s)
+    OR (1 - (embedding <=> %s::vector)) > 0.35
+ORDER BY
+    name,
+    (ts_rank(search_vector, plainto_tsquery('english', %s)) * 0.6
+     + (1 - (embedding <=> %s::vector)) * 0.4) DESC
+LIMIT %s;
                     """,
                     (
                         q,
