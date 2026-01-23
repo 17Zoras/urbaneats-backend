@@ -309,37 +309,43 @@ LIMIT %s;
 # =====================================================
 # 🏷️ Filter by Tag — Chapter 9
 # =====================================================
+# =====================================================
+# 🏷️ Filter by Tag — Chapter 10
+# =====================================================
 @app.get("/filter-by-tag")
-def filter_by_tag(
-    tag: str = Query(..., min_length=1),
-    limit: int = Query(10, ge=1, le=50)
-):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, name, description, price, tags
-                FROM products
-                WHERE %s = ANY(tags)
-                LIMIT %s
-                """,
-                (tag, limit)
-            )
-            rows = cur.fetchall()
+def filter_by_tag(tag: str = Query(..., min_length=1)):
+    try:
+        with get_db_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT id, name, description, price, tags
+                    FROM products
+                    WHERE %s = ANY(tags)
+                    ORDER BY id
+                    """,
+                    (tag,)
+                )
+                rows = cur.fetchall()
 
-    return {
-        "tag": tag,
-        "results": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "price": float(r[3]),
-                "tags": r[4]
-            }
-            for r in rows
-        ]
-    }
+        return {
+            "tag": tag,
+            "results": [
+                {
+                    "id": r[0],
+                    "name": r[1],
+                    "description": r[2],
+                    "price": float(r[3]),
+                    "tags": r[4]
+                }
+                for r in rows
+            ]
+        }
+
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =====================================================
 # Filter by category
 # =====================================================
