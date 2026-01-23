@@ -202,23 +202,23 @@ def semantic_search(
             with conn.cursor() as cur:
                 cur.execute(
                     """
-SELECT DISTINCT ON (name)
-    id, name, description, price,
-    1 - (embedding <=> %s::vector) AS similarity
-FROM products
-WHERE embedding IS NOT NULL
-ORDER BY
-    name,
-    similarity DESC
-LIMIT %s;
-
-                    """,
-                    (
-                        query_embedding,  # similarity SELECT
-                        query_embedding,  # similarity WHERE
-                        query_embedding,  # ORDER BY
-                        limit
+                    WITH scored AS (
+                        SELECT
+                            id,
+                            name,
+                            description,
+                            price,
+                            1 - (embedding <=> %s::vector) AS similarity
+                        FROM products
+                        WHERE embedding IS NOT NULL
                     )
+                    SELECT *
+                    FROM scored
+                    WHERE similarity >= 0.45
+                    ORDER BY similarity DESC
+                    LIMIT %s;
+                    """,
+                    (query_embedding, limit)
                 )
                 rows = cur.fetchall()
 
@@ -238,7 +238,6 @@ LIMIT %s;
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
-
 
 
 # =====================================================
