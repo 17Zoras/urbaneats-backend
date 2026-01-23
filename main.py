@@ -304,6 +304,72 @@ LIMIT %s;
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
+# =====================================================
+# 🔎 Search with Filters — Chapter 11
+# =====================================================
+@app.get("/search-with-filters")
+def search_with_filters(
+    q: str | None = None,
+    tag: str | None = None,
+    min_price: float | None = None,
+    max_price: float | None = None,
+    limit: int = Query(10, ge=1, le=50)
+):
+    if not any([q, tag, min_price, max_price]):
+        raise HTTPException(status_code=400, detail="At least one filter required")
+
+    conditions = []
+    params = []
+
+    if q:
+        conditions.append("search_vector @@ plainto_tsquery('english', %s)")
+        params.append(q)
+
+    if tag:
+        conditions.append("%s = ANY(tags)")
+        params.append(tag)
+
+    if min_price is not None:
+        conditions.append("price >= %s")
+        params.append(min_price)
+
+    if max_price is not None:
+        conditions.append("price <= %s")
+        params.append(max_price)
+
+    where_clause = " AND ".join(conditions)
+
+    query = f"""
+        SELECT id, name, description, price, tags
+        FROM products
+        WHERE {where_clause}
+        LIMIT %s
+    """
+    params.append(limit)
+
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+
+    return {
+        "filters": {
+            "q": q,
+            "tag": tag,
+            "min_price": min_price,
+            "max_price": max_price
+        },
+        "results": [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "price": float(r[3]),
+                "tags": r[4]
+            }
+            for r in rows
+        ]
+    }
 
 
 # =====================================================
