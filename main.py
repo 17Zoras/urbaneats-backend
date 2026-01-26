@@ -98,7 +98,7 @@ def get_products(
     }
 
 # =====================================================
-# Full-text search
+# Full-text search (Chapter 6)
 # =====================================================
 @app.get("/search")
 def search_products(q: str = Query(..., min_length=1)):
@@ -129,7 +129,7 @@ def search_products(q: str = Query(..., min_length=1)):
     }
 
 # =====================================================
-# Google Sheet import (admin)
+# Google Sheet import (Admin)
 # =====================================================
 SHEET_CSV_URL = (
     "https://docs.google.com/spreadsheets/d/"
@@ -167,7 +167,7 @@ def generate_embedding(text: str):
     return model.encode(text).tolist()
 
 # =====================================================
-# Admin: generate embeddings
+# Admin: generate embeddings (Chapter 7)
 # =====================================================
 @app.post("/admin/embed-products")
 def embed_products():
@@ -188,124 +188,127 @@ def embed_products():
     return {"status": "embeddings generated", "count": len(rows)}
 
 # =====================================================
-# ✅ SEMANTIC SEARCH (FIXED + CLEAN)
+# Semantic Search (Chapter 8)
 # =====================================================
 @app.get("/semantic-search")
 def semantic_search(
     q: str = Query(..., min_length=1),
     limit: int = Query(5, ge=1, le=20)
 ):
-    try:
-        query_embedding = generate_embedding(q)
+    query_embedding = generate_embedding(q)
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    WITH scored AS (
-                        SELECT
-                            id,
-                            name,
-                            description,
-                            price,
-                            1 - (embedding <=> %s::vector) AS similarity
-                        FROM products
-                        WHERE embedding IS NOT NULL
-                    )
-                    SELECT *
-                    FROM scored
-                    WHERE similarity >= 0.45
-                    ORDER BY similarity DESC
-                    LIMIT %s;
-                    """,
-                    (query_embedding, limit)
-                )
-                rows = cur.fetchall()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    id, name, description, price,
+                    1 - (embedding <=> %s::vector) AS similarity
+                FROM products
+                WHERE embedding IS NOT NULL
+                  AND 1 - (embedding <=> %s::vector) >= 0.45
+                ORDER BY similarity DESC
+                LIMIT %s
+                """,
+                (query_embedding, query_embedding, limit)
+            )
+            rows = cur.fetchall()
 
-        return {
-            "query": q,
-            "results": [
-                {
-                    "id": r[0],
-                    "name": r[1],
-                    "description": r[2],
-                    "price": float(r[3]),
-                    "similarity": float(r[4])
-                }
-                for r in rows
-            ]
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
+    return {
+        "query": q,
+        "results": [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "price": float(r[3]),
+                "similarity": float(r[4])
+            }
+            for r in rows
+        ]
+    }
 
 # =====================================================
-# 🔀 Hybrid Search (Text + Semantic) — Chapter 8
+# Hybrid Search (Chapter 9)
 # =====================================================
-
 @app.get("/hybrid-search")
 def hybrid_search(
     q: str = Query(..., min_length=1),
     limit: int = Query(5, ge=1, le=20)
 ):
-    try:
-        query_embedding = generate_embedding(q)
+    query_embedding = generate_embedding(q)
 
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-SELECT DISTINCT ON (name)
-    id,
-    name,
-    description,
-    price,
-    ts_rank(search_vector, plainto_tsquery('english', %s)) AS text_rank,
-    1 - (embedding <=> %s::vector) AS semantic_score
-FROM products
-WHERE
-    search_vector @@ plainto_tsquery('english', %s)
-    OR (1 - (embedding <=> %s::vector)) > 0.35
-ORDER BY
-    name,
-    (ts_rank(search_vector, plainto_tsquery('english', %s)) * 0.6
-     + (1 - (embedding <=> %s::vector)) * 0.4) DESC
-LIMIT %s;
-                    """,
-                    (
-                        q,
-                        query_embedding,
-                        q,
-                        query_embedding,
-                        q,
-                        query_embedding,
-                        limit
-                    )
-                )
-                rows = cur.fetchall()
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT ON (name)
+                    id, name, description, price,
+                    ts_rank(search_vector, plainto_tsquery('english', %s)) AS text_rank,
+                    1 - (embedding <=> %s::vector) AS semantic_score
+                FROM products
+                WHERE
+                    search_vector @@ plainto_tsquery('english', %s)
+                    OR (1 - (embedding <=> %s::vector)) > 0.35
+                ORDER BY
+                    name,
+                    (ts_rank(search_vector, plainto_tsquery('english', %s)) * 0.6
+                     + (1 - (embedding <=> %s::vector)) * 0.4) DESC
+                LIMIT %s
+                """,
+                (q, query_embedding, q, query_embedding, q, query_embedding, limit)
+            )
+            rows = cur.fetchall()
 
-        return {
-            "query": q,
-            "results": [
-                {
-                    "id": r[0],
-                    "name": r[1],
-                    "description": r[2],
-                    "price": float(r[3]),
-                    "text_rank": float(r[4]) if r[4] else 0.0,
-                    "semantic_score": float(r[5]),
-                    "category_boost": float(r[6]),
-                }
-                for r in rows
-            ]
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    return {
+        "query": q,
+        "results": [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "price": float(r[3]),
+                "text_rank": float(r[4]) if r[4] else 0.0,
+                "semantic_score": float(r[5])
+            }
+            for r in rows
+        ]
+    }
 
 # =====================================================
-# 🔎 Search with Filters — Chapter 11
+# Filter by Tag (Chapter 10)
+# =====================================================
+@app.get("/filter-by-tag")
+def filter_by_tag(tag: str = Query(..., min_length=1)):
+    with get_db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, name, description, price, tags
+                FROM products
+                WHERE tags @> ARRAY[%s]
+                ORDER BY id
+                """,
+                (tag,)
+            )
+            rows = cur.fetchall()
+
+    return {
+        "tag": tag,
+        "results": [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "price": float(r[3]),
+                "tags": r[4]
+            }
+            for r in rows
+        ]
+    }
+
+# =====================================================
+# Search with Filters (Chapter 11)
 # =====================================================
 @app.get("/search-with-filters")
 def search_with_filters(
@@ -326,7 +329,7 @@ def search_with_filters(
         params.append(q)
 
     if tag:
-        conditions.append("%s = ANY(tags)")
+        conditions.append("tags @> ARRAY[%s]")
         params.append(tag)
 
     if min_price is not None:
@@ -370,83 +373,6 @@ def search_with_filters(
             for r in rows
         ]
     }
-
-
-# =====================================================
-# 🏷️ Filter by Tag — Chapter 9
-# =====================================================
-# =====================================================
-# 🏷️ Filter by Tag — Chapter 10
-# =====================================================
-@app.get("/filter-by-tag")
-def filter_by_tag(tag: str = Query(..., min_length=1)):
-    try:
-        with get_db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT id, name, description, price, tags
-                    FROM products
-                    WHERE %s = ANY(tags)
-                    ORDER BY id
-                    """,
-                    (tag,)
-                )
-                rows = cur.fetchall()
-
-        return {
-            "tag": tag,
-            "results": [
-                {
-                    "id": r[0],
-                    "name": r[1],
-                    "description": r[2],
-                    "price": float(r[3]),
-                    "tags": r[4]
-                }
-                for r in rows
-            ]
-        }
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# =====================================================
-# Filter by category
-# =====================================================
-@app.get("/filter-by-category")
-def filter_by_category(category: str = Query(..., min_length=1)):
-    category = category.lower()
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, name, description, price, tags, category
-                FROM products
-                WHERE category = %s
-                ORDER BY id
-                """,
-                (category,)
-            )
-            rows = cur.fetchall()
-
-    return {
-        "category": category,
-        "results": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "price": float(r[3]),
-                "tags": r[4],
-                "category": r[5]
-            }
-            for r in rows
-        ]
-    }
-
 
 # =====================================================
 # Local run (Cloud Run ignores this)
