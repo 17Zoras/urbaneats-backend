@@ -1,18 +1,59 @@
 import csv
 import os
+import time
 import requests
 from io import StringIO
+from collections import defaultdict
 
-from fastapi import FastAPI, Query, HTTPException
+from fastapi import FastAPI, Query, HTTPException, Request
+from fastapi.responses import JSONResponse
 import psycopg
 from sentence_transformers import SentenceTransformer
 
 print("🚀 UrbanEats starting up...")
 
-app = FastAPI()
+app = FastAPI(title="UrbanEats API", version="1.0")
 
 # =====================================================
-# Lazy-loaded embedding model (Cloud Run safe)
+# API VERSIONING
+# =====================================================
+API_PREFIX = "/api/v1"
+
+# =====================================================
+# RATE LIMITING (20 req / min / IP)
+# =====================================================
+RATE_LIMIT = 20
+WINDOW = 60
+requests_log = defaultdict(list)
+
+@app.middleware("http")
+async def rate_limiter(request: Request, call_next):
+    ip = request.client.host
+    now = time.time()
+
+    requests_log[ip] = [t for t in requests_log[ip] if now - t < WINDOW]
+
+    if len(requests_log[ip]) >= RATE_LIMIT:
+        return JSONResponse(
+            status_code=429,
+            content={"error": "rate_limit", "message": "Too many requests"}
+        )
+
+    requests_log[ip].append(now)
+    return await call_next(request)
+
+# =====================================================
+# STANDARD ERROR FORMAT
+# =====================================================
+@app.exception_handler(HTTPException)
+async def http_exception_handler(_, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": "request_error", "message": exc.detail},
+    )
+
+# =====================================================
+# LAZY EMBEDDING MODEL
 # =====================================================
 _embedding_model = None
 
@@ -21,11 +62,10 @@ def get_embedding_model():
     if _embedding_model is None:
         print("🧠 Loading embedding model...")
         _embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
-        print("✅ Embedding model loaded")
     return _embedding_model
 
 # =====================================================
-# Database connection
+# DATABASE
 # =====================================================
 def get_db_connection():
     return psycopg.connect(
@@ -37,35 +77,31 @@ def get_db_connection():
     )
 
 # =====================================================
-# Health
+# HEALTH + READINESS
 # =====================================================
-@app.get("/health")
+@app.get(f"{API_PREFIX}/health")
 def health():
-    return {"status": "ok", "service": "UrbanEats backend running"}
+    return {"status": "ok"}
 
-# =====================================================
-# DB test
-# =====================================================
-@app.get("/db-test")
-def db_test():
+@app.get(f"{API_PREFIX}/ready")
+def ready():
     try:
         with get_db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("SELECT 1;")
-        return {"db": "connected"}
+                cur.execute("SELECT extname FROM pg_extension WHERE extname='vector';")
+                if not cur.fetchone():
+                    raise Exception("pgvector missing")
+        return {"status": "ready"}
     except Exception as e:
-        return {"db": "error", "detail": str(e)}
+        raise HTTPException(status_code=500, detail=str(e))
 
 # =====================================================
-# Products (pagination)
+# PRODUCTS
 # =====================================================
-@app.get("/products")
-def get_products(
-    page: int = Query(1, ge=1),
-    limit: int = Query(10, ge=1, le=50)
-):
+@app.get(f"{API_PREFIX}/products")
+def get_products(page: int = 1, limit: int = 10):
     offset = (page - 1) * limit
-
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -78,30 +114,13 @@ def get_products(
                 (limit, offset)
             )
             rows = cur.fetchall()
-
-            cur.execute("SELECT COUNT(*) FROM products;")
-            total = cur.fetchone()[0]
-
-    return {
-        "page": page,
-        "limit": limit,
-        "total": total,
-        "products": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "price": float(r[3])
-            }
-            for r in rows
-        ]
-    }
+    return {"products": rows}
 
 # =====================================================
-# Full-text search (Chapter 6)
+# SEARCH
 # =====================================================
-@app.get("/search")
-def search_products(q: str = Query(..., min_length=1)):
+@app.get(f"{API_PREFIX}/search")
+def search(q: str):
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -109,278 +128,81 @@ def search_products(q: str = Query(..., min_length=1)):
                 SELECT id, name, description, price
                 FROM products
                 WHERE search_vector @@ plainto_tsquery('english', %s)
-                ORDER BY ts_rank(search_vector, plainto_tsquery('english', %s)) DESC
                 """,
-                (q, q)
+                (q,)
             )
             rows = cur.fetchall()
-
-    return {
-        "query": q,
-        "results": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "price": float(r[3])
-            }
-            for r in rows
-        ]
-    }
+    return {"query": q, "results": rows}
 
 # =====================================================
-# Google Sheet import (Admin)
-# =====================================================
-SHEET_CSV_URL = (
-    "https://docs.google.com/spreadsheets/d/"
-    "1iSyV2KTMxpyy4ylNn1DY5GMPSi12qruQt6SK85mK_Hg"
-    "/export?format=csv"
-)
-
-@app.post("/admin/import-sheet")
-def import_sheet():
-    response = requests.get(SHEET_CSV_URL, timeout=30)
-    response.raise_for_status()
-
-    reader = csv.DictReader(StringIO(response.text))
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            for row in reader:
-                cur.execute(
-                    """
-                    INSERT INTO products (name, description, price)
-                    VALUES (%s, %s, %s)
-                    ON CONFLICT DO NOTHING
-                    """,
-                    (row["name"], row["description"], row["price"])
-                )
-        conn.commit()
-
-    return {"status": "imported"}
-
-# =====================================================
-# Embedding helpers
+# EMBEDDINGS
 # =====================================================
 def generate_embedding(text: str):
-    model = get_embedding_model()
-    return model.encode(text).tolist()
+    return get_embedding_model().encode(text).tolist()
 
-# =====================================================
-# Admin: generate embeddings (Chapter 7)
-# =====================================================
-@app.post("/admin/embed-products")
+@app.post(f"{API_PREFIX}/admin/embed-products")
 def embed_products():
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT id, name, description FROM products;")
-            rows = cur.fetchall()
-
-            for pid, name, desc in rows:
-                emb = generate_embedding(f"{name}. {desc}")
+            for pid, name, desc in cur.fetchall():
                 cur.execute(
-                    "UPDATE products SET embedding = %s WHERE id = %s",
-                    (emb, pid)
+                    "UPDATE products SET embedding=%s WHERE id=%s",
+                    (generate_embedding(f"{name}. {desc}"), pid)
                 )
-
         conn.commit()
-
-    return {"status": "embeddings generated", "count": len(rows)}
+    return {"status": "done"}
 
 # =====================================================
-# Semantic Search (Chapter 8)
+# SEMANTIC SEARCH
 # =====================================================
-@app.get("/semantic-search")
-def semantic_search(
-    q: str = Query(..., min_length=1),
-    limit: int = Query(5, ge=1, le=20)
-):
-    query_embedding = generate_embedding(q)
-
+@app.get(f"{API_PREFIX}/semantic-search")
+def semantic_search(q: str, limit: int = 5):
+    emb = generate_embedding(q)
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT
-                    id, name, description, price,
-                    1 - (embedding <=> %s::vector) AS similarity
+                SELECT id, name, description, price,
+                       1 - (embedding <=> %s::vector) AS similarity
                 FROM products
                 WHERE embedding IS NOT NULL
                   AND 1 - (embedding <=> %s::vector) >= 0.45
                 ORDER BY similarity DESC
                 LIMIT %s
                 """,
-                (query_embedding, query_embedding, limit)
+                (emb, emb, limit)
             )
             rows = cur.fetchall()
-
-    return {
-        "query": q,
-        "results": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "price": float(r[3]),
-                "similarity": float(r[4])
-            }
-            for r in rows
-        ]
-    }
+    return {"query": q, "results": rows}
 
 # =====================================================
-# Hybrid Search (Chapter 9)
+# HYBRID SEARCH
 # =====================================================
-@app.get("/hybrid-search")
-def hybrid_search(
-    q: str = Query(..., min_length=1),
-    limit: int = Query(5, ge=1, le=20)
-):
-    query_embedding = generate_embedding(q)
-
+@app.get(f"{API_PREFIX}/hybrid-search")
+def hybrid_search(q: str, limit: int = 5):
+    emb = generate_embedding(q)
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT DISTINCT ON (name)
-                    id, name, description, price,
-                    ts_rank(search_vector, plainto_tsquery('english', %s)) AS text_rank,
-                    1 - (embedding <=> %s::vector) AS semantic_score
+                SELECT id, name, description, price,
+                       ts_rank(search_vector, plainto_tsquery('english', %s)),
+                       1 - (embedding <=> %s::vector)
                 FROM products
-                WHERE
-                    search_vector @@ plainto_tsquery('english', %s)
-                    OR (1 - (embedding <=> %s::vector)) > 0.35
                 ORDER BY
-                    name,
-                    (ts_rank(search_vector, plainto_tsquery('english', %s)) * 0.6
-                     + (1 - (embedding <=> %s::vector)) * 0.4) DESC
+                  (ts_rank(search_vector, plainto_tsquery('english', %s))*0.6 +
+                   (1 - (embedding <=> %s::vector))*0.4) DESC
                 LIMIT %s
                 """,
-                (q, query_embedding, q, query_embedding, q, query_embedding, limit)
+                (q, emb, q, emb, limit)
             )
             rows = cur.fetchall()
-
-    return {
-        "query": q,
-        "results": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "price": float(r[3]),
-                "text_rank": float(r[4]) if r[4] else 0.0,
-                "semantic_score": float(r[5])
-            }
-            for r in rows
-        ]
-    }
+    return {"query": q, "results": rows}
 
 # =====================================================
-# Filter by Tag (Chapter 10)
-# =====================================================
-@app.get("/filter-by-tag")
-def filter_by_tag(tag: str = Query(..., min_length=1)):
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, name, description, price, tags
-                FROM products
-                WHERE tags @> ARRAY[%s]
-                ORDER BY id
-                """,
-                (tag,)
-            )
-            rows = cur.fetchall()
-
-    return {
-        "tag": tag,
-        "results": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "price": float(r[3]),
-                "tags": r[4]
-            }
-            for r in rows
-        ]
-    }
-
-# =====================================================
-# Search with Filters (Chapter 11)
-# =====================================================
-@app.get("/search-with-filters")
-def search_with_filters(
-    q: str | None = None,
-    tag: str | None = None,
-    min_price: float | None = None,
-    max_price: float | None = None,
-    limit: int = Query(10, ge=1, le=50)
-):
-    if not any([q, tag, min_price, max_price]):
-        raise HTTPException(status_code=400, detail="At least one filter required")
-
-    conditions = []
-    params = []
-
-    if q:
-        conditions.append("search_vector @@ plainto_tsquery('english', %s)")
-        params.append(q)
-
-    if tag:
-        conditions.append("tags @> ARRAY[%s]")
-        params.append(tag)
-
-    if min_price is not None:
-        conditions.append("price >= %s")
-        params.append(min_price)
-
-    if max_price is not None:
-        conditions.append("price <= %s")
-        params.append(max_price)
-
-    where_clause = " AND ".join(conditions)
-
-    query = f"""
-        SELECT id, name, description, price, tags
-        FROM products
-        WHERE {where_clause}
-        LIMIT %s
-    """
-    params.append(limit)
-
-    with get_db_connection() as conn:
-        with conn.cursor() as cur:
-            cur.execute(query, params)
-            rows = cur.fetchall()
-
-    return {
-        "filters": {
-            "q": q,
-            "tag": tag,
-            "min_price": min_price,
-            "max_price": max_price
-        },
-        "results": [
-            {
-                "id": r[0],
-                "name": r[1],
-                "description": r[2],
-                "price": float(r[3]),
-                "tags": r[4]
-            }
-            for r in rows
-        ]
-    }
-
-# =====================================================
-# Local run (Cloud Run ignores this)
+# LOCAL RUN
 # =====================================================
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=int(os.environ.get("PORT", 8080))
-    )
+    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8080)))
