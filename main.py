@@ -196,18 +196,22 @@ def hybrid_search(q: str, limit: int = 5):
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT
-                    id,
-                    name,
-                    description,
-                    price,
-                    ts_rank(search_vector, plainto_tsquery('english', %s)) AS text_rank,
-                    1 - (embedding <=> %s::vector) AS semantic_score
-                FROM products
-                ORDER BY (text_rank * 0.6 + semantic_score * 0.4) DESC
-                LIMIT %s
+SELECT
+    id,
+    name,
+    description,
+    price,
+    COALESCE(ts_rank(search_vector, plainto_tsquery('english', %s)), 0) AS text_rank,
+    1 - (embedding <=> %s::vector) AS semantic_score
+FROM products
+WHERE embedding IS NOT NULL
+ORDER BY
+    (COALESCE(ts_rank(search_vector, plainto_tsquery('english', %s)), 0) * 0.6
+     + (1 - (embedding <=> %s::vector)) * 0.4) DESC
+LIMIT %s
+
                 """,
-                (q, query_embedding, limit)
+(q, query_embedding, q, query_embedding, limit)
             )
             rows = cur.fetchall()
 
