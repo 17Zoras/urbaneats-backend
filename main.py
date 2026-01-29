@@ -188,34 +188,65 @@ def semantic_search(q: str, limit: int = 5):
 # =====================================================
 # Hybrid Search (Frontend uses this)
 # =====================================================
-@app.get(f"{API_PREFIX}/hybrid-search")
-def hybrid_search(q: str, limit: int = 5):
-    query_embedding = generate_embedding(q)
+@app.get("/api/v1/hybrid-search")
+def hybrid_search(
+    q: str = Query(..., min_length=1),
+    limit: int = Query(5, ge=1, le=20)
+):
+    query_embedding = generate_embedding(q.lower())
 
     with get_db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-SELECT
+WITH ranked AS (
+    SELECT
+        id,
+        name,
+        description,
+        price,
+        tags,
+        ts_rank(search_vector, plainto_tsquery('english', %s)) AS text_rank,
+        1 - (embedding <=> %s::vector) AS semantic_score,
+
+        CASE
+            WHEN %s = ANY(tags) THEN 0.3
+            ELSE 0
+        END AS tag_boost
+    FROM products
+)
+SELECT DISTINCT ON (name)
     id,
     name,
     description,
     price,
-    COALESCE(ts_rank(search_vector, plainto_tsquery('english', %s)), 0) AS text_rank,
-    1 - (embedding <=> %s::vector) AS semantic_score
-FROM products
-WHERE embedding IS NOT NULL
-ORDER BY
-    (COALESCE(ts_rank(search_vector, plainto_tsquery('english', %s)), 0) * 0.6
-     + (1 - (embedding <=> %s::vector)) * 0.4) DESC
-LIMIT %s
-
+    text_rank,
+    semantic_score,
+    (text_rank * 0.6 + semantic_score * 0.3 + tag_boost) AS final_score
+FROM ranked
+WHERE text_rank > 0 OR semantic_score > 0.2
+ORDER BY name, final_score DESC
+LIMIT %s;
                 """,
-(q, query_embedding, q, query_embedding, limit)
+                (q, query_embedding, q, limit)
             )
             rows = cur.fetchall()
 
-    return {"query": q, "results": rows}
+    return {
+        "query": q,
+        "results": [
+            {
+                "id": r[0],
+                "name": r[1],
+                "description": r[2],
+                "price": float(r[3]),
+                "text_rank": float(r[4]),
+                "semantic_score": float(r[5]),
+                "final_score": float(r[6]),
+            }
+            for r in rows
+        ]
+    }
 
 # =====================================================
 # Run
